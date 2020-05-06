@@ -4,7 +4,11 @@ Toying with financial concepts and C++. Implements many useful primitives for fi
 
 # TODO
 
-- [x] Stock Market Order Book
+## Stocks
+
+- [x] Order Book
 - [x] Market Orders Support
 - [ ] Limit Orders Support
+- [ ] Fill listeners
+- [ ] Delete orders
 
