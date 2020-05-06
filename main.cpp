@@ -149,11 +149,11 @@ public:
         }
     };
 
-#define define_execute_overload_for(order_type) \
-    OrderID execute(const order_type& order) { \
+#define define_execute_overload_for(ORDER_TYPE) \
+    OrderID execute(const ORDER_TYPE& order) { \
         OrderID id = nextID(); \
         std::lock_guard<std::mutex> guard(queue_mutex); \
-        queue.push(ReceivedOrder<OrderID, order_type>(id, order)); \
+        queue.push(ReceivedOrder<OrderID, ORDER_TYPE>(id, order)); \
         return id; \
     }
 
@@ -234,85 +234,55 @@ private:
     public:
         explicit ExecuteVisitor(OrderBook<Price, Quantity, Timestamp>& order_book): order_book(order_book) {}
 
-        OrderID operator()(const ReceivedOrder<OrderID, BuyMarketOrder> &order) const {
-            std::cout << "Executing " << order << std::endl;
-
-            std::lock_guard<std::mutex> guard(order_book.asks_mutex);
-
-            auto it = order_book.asks.begin();
-            Quantity unfilled = order.order.quantity;
-            Price paid {};
-
-            while(unfilled > 0 && it != order_book.asks.end()) {
-                if(it->quantity >= unfilled) {
-                    paid += unfilled * it->price;
-                    auto new_ask = *it;
-                    new_ask.quantity -= unfilled;
-                    it = order_book.asks.erase(it);
-                    order_book.asks.insert(new_ask);
-                    unfilled = 0;
-                } else {
-                    paid += it->quantity * it->price;
-                    unfilled -= it->quantity;
-                    it = order_book.asks.erase(it);
-                }
-            }
-
-            if(unfilled) {
-                std::lock_guard<std::mutex> bids_guard(order_book.bids_mutex);
-
-                switch(order.order.onUnfilled.action) {
-                    case MarketOrderWhenUnfilled<Price>::FORGET:
-                        std::cerr << "forgetting unfilled bid for " << unfilled << std::endl;
-                        break;
-                    case MarketOrderWhenUnfilled<Price>::STORE:
-                        std::cerr << "storing unfilled bid for " << unfilled << " at " << order.order.onUnfilled.price << std::endl;
-                        order_book.bids.insert(PooledOrder(order.id, order.order.onUnfilled.price, order.order.quantity));
-                        break;
-                }
-            }
-
-            return order.id;
+        // Because of the inherent symmetry between bids and asks, we'll use a macro
+        // to define executors simultaneously whenever possible (and as long as
+        // readability is not ghastly worsened)
+#define define_market_order_executor(MARKET_ORDER_TYPE, TARGET_SET, OWN_SET) \
+    OrderID operator()(const ReceivedOrder<OrderID, MARKET_ORDER_TYPE> &order) const {\
+            std::cout << "Executing " << order << std::endl;\
+\
+            std::lock_guard<std::mutex> guard(order_book.TARGET_SET##_mutex);\
+\
+            auto it = order_book.TARGET_SET.begin();\
+            Quantity unfilled = order.order.quantity;\
+            Price paid {};\
+\
+            while(unfilled > 0 && it != order_book.TARGET_SET.end()) {\
+                if(it->quantity >= unfilled) {\
+                    paid += unfilled * it->price;\
+                    auto new_ask = *it;\
+                    new_ask.quantity -= unfilled;\
+                    it = order_book.TARGET_SET.erase(it);\
+                    order_book.TARGET_SET.insert(new_ask);\
+                    unfilled = 0;\
+                } else {\
+                    paid += it->quantity * it->price;\
+                    unfilled -= it->quantity;\
+                    it = order_book.TARGET_SET.erase(it);\
+                }\
+            }\
+\
+            if(unfilled) {\
+                std::lock_guard<std::mutex> bids_guard(order_book.OWN_SET##_mutex);\
+\
+                switch(order.order.onUnfilled.action) {\
+                    case MarketOrderWhenUnfilled<Price>::FORGET:\
+                        std::cerr << "forgetting unfilled " #OWN_SET " for " << unfilled << std::endl;\
+                        break;\
+                    case MarketOrderWhenUnfilled<Price>::STORE:\
+                        std::cerr << "storing unfilled " #OWN_SET " for " << unfilled << " at " << order.order.onUnfilled.price << std::endl;\
+                        order_book.OWN_SET.insert(PooledOrder(order.id, order.order.onUnfilled.price, order.order.quantity));\
+                        break;\
+                }\
+            }\
+\
+            return order.id;\
         }
 
-        OrderID operator()(const ReceivedOrder<OrderID, SellMarketOrder> &order) const {
-            std::cout << "Executing " << order << std::endl;
+        define_market_order_executor(BuyMarketOrder, asks, bids)
+        define_market_order_executor(SellMarketOrder, bids, asks)
 
-            std::lock_guard<std::mutex> bids_guard(order_book.bids_mutex);
-
-            auto it = order_book.bids.begin();
-            Quantity unfilled = order.order.quantity;
-            Price paid {};
-
-            while(unfilled > 0 && it != order_book.bids.end()) {
-                if(it->quantity >= unfilled) {
-                    paid += unfilled * it->price;
-                    auto new_bid = *it;
-                    new_bid.quantity -= unfilled;
-                    it = order_book.bids.erase(it);
-                    order_book.bids.insert(new_bid);
-                    unfilled = 0;
-                } else {
-                    paid += it->quantity * it->price;
-                    unfilled -= it->quantity;
-                    it = order_book.bids.erase(it);
-                }
-            }
-
-            if(unfilled) {
-                std::lock_guard<std::mutex> asks_guard(order_book.asks_mutex);
-
-                switch(order.order.onUnfilled.action) {
-                    case MarketOrderWhenUnfilled<Price>::FORGET:
-                        std::cerr << "forgetting unfilled ask for " << unfilled << std::endl;
-                        break;
-                    case MarketOrderWhenUnfilled<Price>::STORE:
-                        std::cerr << "storing unfilled ask for " << unfilled << " at " << order.order.onUnfilled.price << std::endl;
-                        order_book.asks.insert(PooledOrder(order.id, order.order.onUnfilled.price, order.order.quantity));
-                        break;
-                }
-            }
-        }
+#undef define_market_order_executor
 
         OrderID operator()(const ReceivedOrder<OrderID, BuyLimitOrder> &order) const {
             return order.id;
